@@ -6,9 +6,10 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 
-// Eager load landing page for fast initial render
+// Eager load landing page and auth callback for fast initial render
 import LandingPage from "./pages/LandingPage";
 import NotFound from "./pages/NotFound";
+import { AuthCallback } from "./pages/AuthCallback";
 
 // Lazy load heavy pages to improve initial bundle size
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -38,6 +39,7 @@ const App = () => (
           {/* Public routes */}
           <Route path="/" element={<LandingPage />} />
           <Route path="/demo" element={<DemoPage />} />
+          <Route path="/auth/callback" element={<AuthCallback />} />
 
           {/* Protected routes - require authentication or demo mode */}
           <Route
