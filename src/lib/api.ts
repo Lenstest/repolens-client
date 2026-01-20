@@ -126,15 +126,20 @@ class ApiClient {
   }
 
   /**
-   * Get headers with CSRF token for state-changing requests.
-   * Auth tokens are automatically sent via httpOnly cookies.
+   * Get headers with Authorization and optional CSRF token.
    */
   private getHeaders(includeCSRF: boolean = false): HeadersInit {
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
     };
 
-    // Add CSRF token for state-changing operations
+    // Add Authorization header with Bearer token from localStorage
+    const accessToken = localStorage.getItem('repolens_access_token');
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    }
+
+    // Add CSRF token for state-changing operations (defense in depth)
     if (includeCSRF) {
       const csrfToken = this.getCsrfToken();
       if (csrfToken) {
@@ -250,8 +255,7 @@ class ApiClient {
       {
         method: 'GET',
         headers: this.getHeaders(false),
-        credentials: 'include',
-        signal: options?.signal,
+                signal: options?.signal,
       },
       {
         timeout: options?.timeout ?? DEFAULT_TIMEOUT,
@@ -285,8 +289,7 @@ class ApiClient {
       {
         method: 'POST',
         headers: this.getHeaders(true),
-        credentials: 'include',
-        body: body ? JSON.stringify(body) : undefined,
+                body: body ? JSON.stringify(body) : undefined,
       },
       {
         timeout: options?.timeout ?? DEFAULT_TIMEOUT,
@@ -319,8 +322,7 @@ class ApiClient {
       {
         method: 'DELETE',
         headers: this.getHeaders(true),
-        credentials: 'include',
-      },
+              },
       {
         timeout: options?.timeout ?? DEFAULT_TIMEOUT,
         retries: 0, // Don't retry DELETE by default
@@ -368,8 +370,7 @@ class ApiClient {
       const response = await fetch(`${API_BASE_URL}${path}`, {
         method: 'POST',
         headers: this.getHeaders(true),
-        credentials: 'include',
-        body: JSON.stringify(body),
+                body: JSON.stringify(body),
         signal: combinedSignal,
       });
 
@@ -440,6 +441,39 @@ class ApiClient {
   createEventSource(path: string): EventSource {
     const url = `${API_BASE_URL}${path}`;
     return new EventSource(url);
+  }
+
+  /**
+   * Refresh access token using refresh token
+   * Returns true if refresh succeeded, false otherwise
+   */
+  async refreshAccessToken(): Promise<boolean> {
+    const refreshToken = localStorage.getItem('repolens_refresh_token');
+    if (!refreshToken) {
+      return false;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+
+      if (!response.ok) {
+        // Refresh failed - clear tokens
+        localStorage.removeItem('repolens_access_token');
+        localStorage.removeItem('repolens_refresh_token');
+        localStorage.removeItem('repolens_user');
+        return false;
+      }
+
+      const data = await response.json();
+      localStorage.setItem('repolens_access_token', data.access_token);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
