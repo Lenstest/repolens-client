@@ -7,11 +7,12 @@ interface User {
   email: string;
   name: string;
   avatar_url: string;
+  username?: string;
 }
 
 interface AuthContextType {
   user: User | null;
-  token: string | null; // Deprecated: kept for backward compatibility
+  token: string | null;
   login: () => void;
   logout: () => void;
   isLoading: boolean;
@@ -22,16 +23,34 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Token storage keys
+const ACCESS_TOKEN_KEY = 'repolens_access_token';
+const REFRESH_TOKEN_KEY = 'repolens_refresh_token';
+const USER_KEY = 'repolens_user';
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
+  // Initialize user from localStorage if available
+  const [user, setUser] = useState<User | null>(() => {
+    const storedUser = localStorage.getItem(USER_KEY);
+    return storedUser ? JSON.parse(storedUser) : null;
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [isDemoMode, setIsDemoMode] = useState(false);
 
   const fetchCurrentUser = useCallback(async () => {
+    // Check if we have a token before making the request
+    const token = localStorage.getItem(ACCESS_TOKEN_KEY);
+    if (!token) {
+      setUser(null);
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      // Backend will check httpOnly cookie automatically
+      // Backend will check Authorization header (set by api client)
       const data = await api.get<User>('/api/auth/me');
       setUser(data);
+      localStorage.setItem(USER_KEY, JSON.stringify(data));
 
       // Auto-exit demo mode when user successfully authenticates
       const storedDemoMode = localStorage.getItem('demoMode');
@@ -40,7 +59,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsDemoMode(false);
       }
     } catch (error) {
-      // User not authenticated - this is normal, don't show error
+      // Token might be expired - clear it
+      localStorage.removeItem(ACCESS_TOKEN_KEY);
+      localStorage.removeItem(REFRESH_TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
       setUser(null);
     } finally {
       setIsLoading(false);
@@ -56,8 +78,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    // Try to fetch current user (auth via httpOnly cookie)
-    fetchCurrentUser();
+    // Check if we have tokens in localStorage
+    const token = localStorage.getItem(ACCESS_TOKEN_KEY);
+    if (token) {
+      // Validate token by fetching current user
+      fetchCurrentUser();
+    } else {
+      setIsLoading(false);
+    }
   }, [fetchCurrentUser]);
 
   // Refetch user when navigating to dashboard (catches OAuth redirects)
@@ -108,7 +136,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!user && !isDemoMode) return;
 
     try {
-      // Call backend to blacklist token and clear cookies
+      // Call backend to blacklist token
       await api.post('/api/auth/logout');
       toast.success('Logged out successfully');
     } catch (error) {
@@ -118,7 +146,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // Clear local state
+    // Clear localStorage tokens
+    localStorage.removeItem(ACCESS_TOKEN_KEY);
+    localStorage.removeItem(REFRESH_TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
     localStorage.removeItem('demoMode');
     setUser(null);
     setIsDemoMode(false);
@@ -134,10 +165,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('demoMode');
   }, []);
 
+  // Get current access token for components that need it
+  const token = localStorage.getItem(ACCESS_TOKEN_KEY);
+
   return (
     <AuthContext.Provider value={{
       user,
-      token: null, // Deprecated: tokens now managed via httpOnly cookies
+      token,
       login,
       logout,
       isLoading,
