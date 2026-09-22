@@ -17,7 +17,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import Dagre from '@dagrejs/dagre';
 import { Header } from '@/components/layout/Header';
-import { demoRepositories } from '@/data/mockData';
+import { fetchDemoGraph, fetchDemoInsights, fetchDemoRepositories } from '@/lib/demoData';
 import { GraphNode } from '@/types';
 import { FileNode, ClassNode, FunctionNode, FolderNode } from '@/components/graph/CustomNodes';
 import { NodeDrawer } from '@/components/graph/NodeDrawer';
@@ -31,7 +31,7 @@ import { HelpCenter } from '@/components/help/HelpCenter';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
-import { ArrowLeft, Search, MessageSquare, LayoutGrid, LayoutList, FolderTree, Network, ChevronsDownUp, ChevronsUpDown, Filter, X, ChevronDown, ChevronUp, Lightbulb, Command } from 'lucide-react';
+import { ArrowLeft, Search, MessageSquare, LayoutGrid, LayoutList, FolderTree, Network, ChevronsDownUp, ChevronsUpDown, Filter, X, ChevronDown, ChevronUp, Lightbulb, Command, Sparkles, Loader2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
@@ -185,7 +185,11 @@ function GraphExplorerInner() {
   const [chatOpen, setChatOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [semanticSearchResults, setSemanticSearchResults] = useState<Array<{ node_id: string; similarity: number; type?: string; language?: string }>>([]);
-  const [_isSearching, setIsSearching] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  // 'name' matches node names in the browser; 'semantic' asks the backend
+  // for the nearest code by meaning. Name search falls back to semantic
+  // when it finds nothing.
+  const [searchMode, setSearchMode] = useState<'name' | 'semantic'>('name');
   const [focusMode, _setFocusMode] = useState<'all' | 'neighbors'>('all');
   const [typeFilter, setTypeFilter] = useState<'file' | 'class' | 'function' | null>(null);
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
@@ -205,7 +209,9 @@ function GraphExplorerInner() {
   const [searchLanguageFilter, _setSearchLanguageFilter] = useState<string>('all');
 
   // Hardcoded sensible defaults (removed UI controls)
-  const SIMILARITY_THRESHOLD = 0.5;
+  // Neo4j normalises cosine similarity to (1 + cos) / 2, so unrelated code
+  // scores around 0.5 and a threshold at or below 0.5 filters nothing.
+  const SIMILARITY_THRESHOLD = 0.65;
   const TOP_K_RESULTS = 20;
 
   // Insights panel
@@ -241,11 +247,13 @@ function GraphExplorerInner() {
   // Register ? shortcut for help center
   useHelpCenterShortcut(() => setHelpCenterOpen(true));
 
-  // Fetch graph data from backend or use demo data
+  // Fetch graph data from the backend, or from pre-parsed static files in demo mode
   const { data: graphData, isLoading, error } = useQuery({
-    queryKey: ['graph', repoId],
-    queryFn: () => api.get<GraphResponse>(`/api/graph/${repoId}`),
-    enabled: !!repoId,  // Always fetch from API, even in demo mode
+    queryKey: ['graph', repoId, isDemoMode],
+    queryFn: () => isDemoMode
+      ? fetchDemoGraph(repoId!)
+      : api.get<GraphResponse>(`/api/graph/${repoId}`),
+    enabled: !!repoId,
     staleTime: 5 * 60 * 1000,  // Cache for 5 minutes - don't refetch on navigation
     gcTime: 10 * 60 * 1000,  // Keep in cache for 10 minutes
     refetchOnWindowFocus: false,  // Don't refetch when window regains focus
@@ -254,19 +262,25 @@ function GraphExplorerInner() {
 
   // Fetch insights
   const { data: insightsData, isLoading: insightsLoading } = useQuery({
-    queryKey: ['insights', repoId],
-    queryFn: () => api.get<any>(`/api/repos/${repoId}/insights`),
+    queryKey: ['insights', repoId, isDemoMode],
+    queryFn: () => isDemoMode
+      ? fetchDemoInsights<any>(repoId!)
+      : api.get<any>(`/api/repos/${repoId}/insights`),
     enabled: !!repoId && showInsights,  // Only fetch when panel is open
     staleTime: 5 * 60 * 1000,  // Cache for 5 minutes
     gcTime: 10 * 60 * 1000,  // Keep in cache for 10 minutes
   });
 
   // Get repo info for display (name, etc.)
+  const { data: demoRepositories = [] } = useQuery({
+    queryKey: ['demo-repos'],
+    queryFn: fetchDemoRepositories,
+    enabled: isDemoMode,
+  });
   const repo = isDemoMode
     ? demoRepositories.find((r) => r.id === repoId)
     : null;
 
-  // Always use backend data - demo repos are served from /api/graph/{repo_id}
   const graphNodes = graphData?.nodes || [];
   const graphEdges = graphData?.edges || [];
 
@@ -744,9 +758,8 @@ function GraphExplorerInner() {
     setHoveredNode(null);
   }, []);
 
-  // Perform semantic search with filters (prepared for future integration)
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _performSemanticSearch = useCallback(async (query: string) => {
+  // Perform semantic search with filters
+  const performSemanticSearch = useCallback(async (query: string) => {
     if (!query.trim() || !repoId) return;
 
     setIsSearching(true);
@@ -755,7 +768,7 @@ function GraphExplorerInner() {
       const code_type = searchTypeFilters.size === 1 ? Array.from(searchTypeFilters)[0] : undefined;
       const language = searchLanguageFilter !== 'all' ? searchLanguageFilter : undefined;
 
-      const response = await api.post<{ results: Array<{ metadata: { node_id: string; type?: string; language?: string }; similarity: number }> }>(
+      const response = await api.post<{ results: Array<{ node_id?: string; language?: string; similarity: number; metadata?: { node_id?: string; type?: string; language?: string } }> }>(
         '/api/search/semantic',
         {
           query,
@@ -767,12 +780,14 @@ function GraphExplorerInner() {
         }
       );
 
-      const results = response.results.map(r => ({
-        node_id: r.metadata.node_id,
-        similarity: r.similarity,
-        type: r.metadata.type,
-        language: r.metadata.language
-      }));
+      const results = response.results
+        .map(r => ({
+          node_id: r.node_id ?? r.metadata?.node_id ?? '',
+          similarity: r.similarity,
+          type: r.metadata?.type?.toLowerCase(),
+          language: r.language ?? r.metadata?.language
+        }))
+        .filter(r => r.node_id);
 
       setSemanticSearchResults(results);
 
@@ -801,6 +816,12 @@ function GraphExplorerInner() {
   useEffect(() => {
     const timeoutId = setTimeout(() => {
       if (searchQuery.trim()) {
+        // Semantic search needs the backend, which a static demo does not have
+        if (searchMode === 'semantic' && !isDemoMode) {
+          performSemanticSearch(searchQuery);
+          return;
+        }
+
         // Search ALL graph nodes, not just visible ones
         const matchingNodeIds = new Set<string>();
         const queryLower = searchQuery.toLowerCase();
@@ -810,6 +831,12 @@ function GraphExplorerInner() {
             matchingNodeIds.add(node.id);
           }
         });
+
+        // No name matches: ask the backend for the nearest code by meaning
+        if (matchingNodeIds.size === 0 && !isDemoMode) {
+          performSemanticSearch(searchQuery);
+          return;
+        }
 
         // If matches found, expand folders containing matches
         if (matchingNodeIds.size > 0) {
@@ -833,6 +860,7 @@ function GraphExplorerInner() {
           }
         }
 
+        setSemanticSearchResults([]);
         setHighlightedNodes(matchingNodeIds);
       } else {
         setSemanticSearchResults([]);
@@ -841,7 +869,7 @@ function GraphExplorerInner() {
     }, 300); // 300ms debounce
 
     return () => clearTimeout(timeoutId);
-  }, [searchQuery, graphNodes, collapsedFolders]);
+  }, [searchQuery, searchMode, isDemoMode, graphNodes, collapsedFolders, performSemanticSearch]);
 
   // Group semantic search results by type (prepared for future UI)
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -1061,19 +1089,38 @@ function GraphExplorerInner() {
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" aria-hidden="true" />
             <Input
-              placeholder="Search nodes..."
+              placeholder={searchMode === 'semantic' ? 'Describe the code...' : 'Search nodes...'}
               className="pl-9 w-56 h-9"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              aria-label="Search for files, classes, or functions in the graph"
+              aria-label={searchMode === 'semantic'
+                ? 'Search the graph by meaning'
+                : 'Search for files, classes, or functions in the graph'}
               role="searchbox"
             />
-            {searchQuery && highlightedNodes.size > 0 && (
+            {isSearching && (
+              <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+            )}
+            {!isSearching && searchQuery && highlightedNodes.size > 0 && (
               <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-primary-foreground bg-primary px-2 py-0.5 rounded-full font-medium" aria-label={`${highlightedNodes.size} results found`}>
                 {highlightedNodes.size}
               </div>
             )}
           </div>
+
+          {!isDemoMode && (
+          <Button
+            variant={searchMode === 'semantic' ? 'secondary' : 'ghost'}
+            size="sm"
+            onClick={() => setSearchMode(searchMode === 'semantic' ? 'name' : 'semantic')}
+            className="h-9"
+            title="Search by meaning instead of by name"
+            aria-pressed={searchMode === 'semantic'}
+          >
+            <Sparkles className="h-4 w-4 mr-1.5" />
+            Semantic
+          </Button>
+          )}
 
           <div className="h-6 w-px bg-border" />
 

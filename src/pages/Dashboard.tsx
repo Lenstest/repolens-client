@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom';
 import { Repository } from '@/types';
 import { Progress } from '@/components/ui/progress';
 import { api } from '@/lib/api';
+import { fetchDemoRepositories } from '@/lib/demoData';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import { useOnboarding } from '@/contexts/OnboardingContext';
@@ -24,14 +25,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-
-interface DemoRepository {
-  id: string;
-  name: string;
-  description: string;
-  language: string;
-  files_count: number;
-}
 
 // Step definitions with labels and icons
 const STEP_CONFIG = {
@@ -96,24 +89,10 @@ export default function Dashboard() {
     enabled: !!user && !isDemoMode,
   });
 
-  // Fetch demo repositories from backend
+  // Demo repositories are pre-parsed static files, so they work without a backend
   const { data: demoRepos = [], isLoading: isDemoLoading } = useQuery({
     queryKey: ['demo-repos'],
-    queryFn: async () => {
-      const data = await api.get<DemoRepository[]>('/api/demo/repositories');
-      // Transform demo repositories to match Repository interface
-      return data.map((repo): Repository => ({
-        id: repo.id,
-        name: repo.name,
-        url: '',
-        status: 'complete',
-        nodeCount: 0,
-        edgeCount: 0,
-        fileCount: repo.files_count,
-        lastAnalyzed: new Date().toISOString().split('T')[0],
-        isDemo: true,
-      }));
-    },
+    queryFn: fetchDemoRepositories,
     enabled: isDemoMode,
   });
 

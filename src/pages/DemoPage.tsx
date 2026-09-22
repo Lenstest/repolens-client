@@ -4,16 +4,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useEffect } from 'react';
 import { GitBranch, Loader2 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
-import { api } from '@/lib/api';
+import { fetchDemoRepositories } from '@/lib/demoData';
 import { useQuery } from '@tanstack/react-query';
-
-interface DemoRepository {
-  id: string;
-  name: string;
-  description: string;
-  language: string;
-  files_count: number;
-}
 
 export default function DemoPage() {
   const navigate = useNavigate();
@@ -25,10 +17,10 @@ export default function DemoPage() {
     }
   }, [isDemoMode, enterDemoMode]);
 
-  // Fetch demo repositories from backend
+  // Demo repositories are pre-parsed static files, so they work without a backend
   const { data: demoRepositories = [], isLoading } = useQuery({
     queryKey: ['demo-repos'],
-    queryFn: () => api.get<DemoRepository[]>('/api/demo/repositories'),
+    queryFn: fetchDemoRepositories,
   });
 
   return (
@@ -61,7 +53,7 @@ export default function DemoPage() {
                     <div>
                       <h3 className="font-semibold">{repo.name}</h3>
                       <p className="text-sm text-muted-foreground">
-                        {repo.files_count} files • {repo.language}
+                        {repo.fileCount} files • {repo.language}
                       </p>
                     </div>
                   </div>
